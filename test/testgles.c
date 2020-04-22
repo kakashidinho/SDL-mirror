@@ -22,10 +22,23 @@
 
 #ifdef HAVE_OPENGLES
 
+#define USE_GLES1 0
+
+#if USE_GLES1
 #include "SDL_opengles.h"
+#else
+#include "SDL_opengles2.h"
+
+#define VERTEX_POS_INDEX 0
+#define VERTEX_COLOR_INDEX 2
+
+#endif
 
 static SDLTest_CommonState *state;
 static SDL_GLContext *context = NULL;
+
+static GLuint *shaderPrograms;
+
 static int depth = 16;
 
 /* Call this instead of exit(), so we can clean up SDL: atexit() is evil. */
@@ -44,12 +57,62 @@ quit(int rc)
         SDL_free(context);
     }
 
+    if (shaderPrograms)
+    {
+        SDL_free(shaderPrograms);
+    }
+
     SDLTest_CommonQuit(state);
     exit(rc);
 }
 
+static void RotateMatrix(float angle, float x, float y, float z, float *matrixOut)
+{
+    float length = sqrtf(x * x + y * y + z * z);
+    float angle_radians  = angle * (3.14159265358979323f / 180.0f);
+    float c              = cos(angle_radians);
+    float ci             = 1.f - c;
+    float s              = sin(angle_radians);
+
+    x = x / length;
+    y = y / length;
+    z = z / length;
+
+    float x2 = x * x;
+    float y2 = y * y;
+    float z2 = z * z;
+
+    float xy = x * y;
+    float yz = y * z;
+    float zx = z * x;
+
+    matrixOut[0] = c + ci * x2;
+    matrixOut[1] = ci * xy + s * z;
+    matrixOut[2] = ci * zx - s * y;
+    matrixOut[3] = 0.f;
+
+    matrixOut[4] = ci * xy - s * z;
+    matrixOut[5] = c + ci * y2;
+    matrixOut[6] = ci * yz + s * x;
+    matrixOut[7] = 0.f;
+
+    matrixOut[8]  = ci * zx + s * y;
+    matrixOut[9]  = ci * yz - s * x;
+    matrixOut[10] = c + ci * z2;
+    matrixOut[11] = 0.f;
+
+    matrixOut[12] = 0.f;
+    matrixOut[13] = 0.f;
+    matrixOut[14] = 0.f;
+    matrixOut[15] = 1.f;
+}
+
 static void
-Render()
+Render(
+#if !USE_GLES1
+       GLuint shaderProgram
+#endif
+       )
 {
     static GLubyte color[8][4] = { {255, 0, 0, 0},
     {255, 0, 0, 255},
@@ -88,6 +151,7 @@ Render()
     glClearColor(0.0, 0.0, 0.0, 1.0);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
+#if USE_GLES1
     /* Draw the cube */
     glColorPointer(4, GL_UNSIGNED_BYTE, 0, color);
     glEnableClientState(GL_COLOR_ARRAY);
@@ -97,6 +161,25 @@ Render()
 
     glMatrixMode(GL_MODELVIEW);
     glRotatef(5.0, 1.0, 1.0, 1.0);
+#else
+    glVertexAttribPointer(VERTEX_COLOR_INDEX, 4, GL_UNSIGNED_BYTE, GL_TRUE, 0, color);
+    glEnableVertexAttribArray(VERTEX_COLOR_INDEX);
+    glVertexAttribPointer(VERTEX_POS_INDEX, 3, GL_FLOAT, GL_FALSE, 0, cube);
+    glEnableVertexAttribArray(VERTEX_POS_INDEX);
+
+    float rotationMatrix[16];
+    static float angle = 0.0;
+    RotateMatrix(angle, 1.0, 1.0, 1.0, rotationMatrix);
+
+    glUniformMatrix4fv(glGetUniformLocation(shaderProgram, "uMatrix"), 1, GL_FALSE, rotationMatrix);
+    glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_BYTE, indices);
+
+    angle += .05f;
+    if (angle >= 360.f)
+    {
+        angle -= 360.f;
+    }
+#endif
 }
 
 int
@@ -159,8 +242,13 @@ main(int argc, char *argv[])
     state->gl_green_size = 5;
     state->gl_blue_size = 5;
     state->gl_depth_size = depth;
+#if USE_GLES1
     state->gl_major_version = 1;
     state->gl_minor_version = 1;
+#else
+    state->gl_major_version = 2;
+    state->gl_minor_version = 0;
+#endif
     state->gl_profile_mask = SDL_GL_CONTEXT_PROFILE_ES;
     if (fsaa) {
         state->gl_multisamplebuffers=1;
@@ -178,6 +266,14 @@ main(int argc, char *argv[])
         SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Out of memory!\n");
         quit(2);
     }
+
+#if !USE_GLES2
+    shaderPrograms = (GLuint *)SDL_calloc(state->num_windows, sizeof(GLuint));
+    if (shaderPrograms == NULL) {
+        SDL_LogError(SDL_LOG_CATEGORY_APPLICATION, "Out of memory!\n");
+        quit(2);
+    }
+#endif
 
     /* Create OpenGL ES contexts */
     for (i = 0; i < state->num_windows; i++) {
@@ -263,6 +359,7 @@ main(int argc, char *argv[])
         float aspectAdjust;
 
         status = SDL_GL_MakeCurrent(state->windows[i], context[i]);
+        SDL_GL_GetDrawableSize(state->windows[i], &state->window_w, &state->window_h);
         if (status) {
             SDL_Log("SDL_GL_MakeCurrent(): %s\n", SDL_GetError());
 
@@ -272,14 +369,64 @@ main(int argc, char *argv[])
 
         aspectAdjust = (4.0f / 3.0f) / ((float)state->window_w / state->window_h);
         glViewport(0, 0, state->window_w, state->window_h);
+
+        glEnable(GL_DEPTH_TEST);
+        glDepthFunc(GL_LESS);
+
+#if USE_GLES1
         glMatrixMode(GL_PROJECTION);
         glLoadIdentity();
         glOrthof(-2.0, 2.0, -2.0 * aspectAdjust, 2.0 * aspectAdjust, -20.0, 20.0);
         glMatrixMode(GL_MODELVIEW);
         glLoadIdentity();
-        glEnable(GL_DEPTH_TEST);
-        glDepthFunc(GL_LESS);
         glShadeModel(GL_SMOOTH);
+#else
+        // Create simple shader program
+        const char kVS[] = "#version 100\n"
+        "attribute vec3 aPosition;\n"
+        "attribute vec4 aColor;\n"
+
+        "uniform mat4 uMatrix;\n"
+
+        "varying vec4 vColor;\n"
+        "void main()\n"
+        "{\n"
+        "   gl_Position = vec4(aPosition, 1.0) * uMatrix;\n"
+        "   vColor      = aColor;\n"
+        "}\n"
+        "";
+        const char kFS[] = "#version 100\n"
+        "varying lowp vec4 vColor;\n"
+        "void main()\n"
+        "{\n"
+        "   gl_FragColor = vColor;\n"
+        "}\n";
+
+        GLuint vs, fs;
+        const GLchar *sources[] = {kVS, kFS};
+        const GLint lengths[] = {-1};
+        vs = glCreateShader(GL_VERTEX_SHADER);
+        glShaderSource(vs, 1, &sources[0], lengths);
+        glCompileShader(vs);
+
+        fs = glCreateShader(GL_FRAGMENT_SHADER);
+        glShaderSource(fs, 1, &sources[1], lengths);
+        glCompileShader(fs);
+
+        shaderPrograms[i] = glCreateProgram();
+        glAttachShader(shaderPrograms[i], vs);
+        glAttachShader(shaderPrograms[i], fs);
+
+        glBindAttribLocation(shaderPrograms[i], VERTEX_POS_INDEX, "aPosition");
+        glBindAttribLocation(shaderPrograms[i], VERTEX_COLOR_INDEX, "aColor");
+
+        glLinkProgram(shaderPrograms[i]);
+
+        glDeleteShader(vs);
+        glDeleteShader(fs);
+
+        glUseProgram(shaderPrograms[i]);
+#endif
     }
 
     /* Main render loop */
@@ -304,7 +451,11 @@ main(int argc, char *argv[])
                                 /* Change view port to the new window dimensions */
                                 glViewport(0, 0, event.window.data1, event.window.data2);
                                 /* Update window content */
+#if USE_GLES1
                                 Render();
+#else
+                                Render(shaderPrograms[i]);
+#endif
                                 SDL_GL_SwapWindow(state->windows[i]);
                                 break;
                             }
@@ -324,7 +475,11 @@ main(int argc, char *argv[])
                 /* Continue for next window */
                 continue;
             }
+#if USE_GLES1
             Render();
+#else
+            Render(shaderPrograms[i]);
+#endif
             SDL_GL_SwapWindow(state->windows[i]);
         }
     }
