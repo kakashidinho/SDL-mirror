@@ -240,7 +240,7 @@ UIKit_GL_RestoreCurrentContext(void)
          */
         MGLContext *context = (__bridge MGLContext *) SDL_GL_GetCurrentContext();
         if (context != NULL && [MGLContext currentContext] != context) {
-            [MGLContext setCurrentContext:context];
+            [MGLContext setCurrentContext:context forLayer:[MGLContext currentLayer]];
         }
     }
 }
