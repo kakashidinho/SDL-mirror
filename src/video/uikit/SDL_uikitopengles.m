@@ -70,7 +70,7 @@ UIKit_GL_MakeCurrent(_THIS, SDL_Window * window, SDL_GLContext context)
     @autoreleasepool {
         SDLEAGLContext *eaglcontext = (__bridge SDLEAGLContext *) context;
 
-        if (![MGLContext setCurrentContext:eaglcontext forLayer:(MGLLayer*)eaglcontext.sdlView.layer]) {
+        if (![MGLContext setCurrentContext:eaglcontext]) {
             return SDL_SetError("Could not make EAGL context current");
         }
 
